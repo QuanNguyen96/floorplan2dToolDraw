@@ -1,25 +1,20 @@
-import logo from './logo.svg';
-import './App.css';
+import React from 'react';
+import LeftToolbar from './components/LeftToolbar';
+import CanvasGrid from './components/CanvasGrid';
+import { EditorProvider } from './context/EditorContext';
+import WallSettingsPanel from './components/WallSettingsPanel';
 
 function App() {
   return (
-    <div className="App">
-      <header className="App-header">
-        <img src={logo} className="App-logo" alt="logo" />
-        <p>
-          Edit <code>src/App.js</code> and save to reload.
-        </p>
-        <a
-          className="App-link"
-          href="https://reactjs.org"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Learn React
-        </a>
-      </header>
-    </div>
+    <EditorProvider>
+      <div style={{ display: 'flex', height: '100vh' }}>
+        <LeftToolbar />
+        <CanvasGrid />
+        <WallSettingsPanel />
+      </div>
+    </EditorProvider>
   );
 }
 
 export default App;
+
