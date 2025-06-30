@@ -2,6 +2,8 @@
 import React from 'react';
 import { Button, Card } from '@blueprintjs/core';
 import { useEditor } from '../context/EditorContext';
+import { ReactComponent as DoorIcon } from '../assets/icons/icons8/noun-door-736133.svg';
+
 
 const LeftToolbar = () => {
   const { mode, setMode } = useEditor();
@@ -19,7 +21,8 @@ const LeftToolbar = () => {
         fill
       />
       <Button
-        text="Door"
+        // text="Door"
+        icon={<DoorIcon width={16} height={16} />}
         active={mode === 'door'}
         onClick={() => toggleMode('door')}
         fill
