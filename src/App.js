@@ -3,6 +3,7 @@ import LeftToolbar from './components/LeftToolbar';
 import CanvasGrid from './components/CanvasGrid';
 import { EditorProvider } from './context/EditorContext';
 import WallSettingsPanel from './components/WallSettingsPanel';
+// import Layout3d from './components/Layout3d';
 
 function App() {
   return (
@@ -11,6 +12,7 @@ function App() {
         <LeftToolbar />
         <CanvasGrid />
         <WallSettingsPanel />
+        {/* <Layout3d /> */}
       </div>
     </EditorProvider>
   );

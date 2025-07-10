@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from "react";
 import { useEditor } from "../context/EditorContext";
+import { validate } from "uuid";
 
 const WALL_WIDTH = 10;
 const SNAP_DISTANCE = 50;
 const SnapDoorWindowToWall = ({ stageRef }) => {
-  const { mode, walls, vertices, setDoors } = useEditor();
+  const { mode, walls, vertices, doors, setDoors } = useEditor();
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [snapInfo, setSnapInfo] = useState(null);
   const getVertexById = (id) => vertices.find((v) => v.id === id);
@@ -81,28 +82,54 @@ const SnapDoorWindowToWall = ({ stageRef }) => {
 
     return closest;
   };
+  function isRectOverlap(r1, r2) {
+    return !(
+      r1.x + r1.width <= r2.x ||
+      r2.x + r2.width <= r1.x ||
+      r1.y + r1.height <= r2.y ||
+      r2.y + r2.height <= r1.y
+    );
+  }
+  function isPolygonOverlap(polyA, polyB) {
+    const polys = [polyA, polyB];
 
-  // function getDoorTransformFromSnap(snapInfo) {
-  //   if (!snapInfo || !snapInfo.wall || !snapInfo.point) return null;
+    for (let i = 0; i < polys.length; i++) {
+      const polygon = polys[i];
 
-  //   const { wall, point } = snapInfo;
+      for (let i1 = 0; i1 < polygon.length; i1++) {
+        const i2 = (i1 + 1) % polygon.length;
+        const p1 = polygon[i1];
+        const p2 = polygon[i2];
 
-  //   const v1 = vertices.find((v) => v.id === wall.startId);
-  //   const v2 = vertices.find((v) => v.id === wall.endId);
-  //   if (!v1 || !v2) return null;
+        const normal = {
+          x: p2.y - p1.y,
+          y: p1.x - p2.x,
+        };
 
-  //   const dx = v2.x - v1.x;
-  //   const dy = v2.y - v1.y;
-  //   const angleRad = Math.atan2(dy, dx);
-  //   const angleDeg = (angleRad * 180) / Math.PI;
+        let minA = null;
+        let maxA = null;
+        for (const p of polyA) {
+          const projected = p.x * normal.x + p.y * normal.y;
+          if (minA === null || projected < minA) minA = projected;
+          if (maxA === null || projected > maxA) maxA = projected;
+        }
 
-  //   // Không cần pivot nữa → snapPoint chính là trung tâm cửa
-  //   return {
-  //     x: point.x,
-  //     y: point.y,
-  //     angle: angleDeg,
-  //   };
-  // }
+        let minB = null;
+        let maxB = null;
+        for (const p of polyB) {
+          const projected = p.x * normal.x + p.y * normal.y;
+          if (minB === null || projected < minB) minB = projected;
+          if (maxB === null || projected > maxB) maxB = projected;
+        }
+
+        if (maxA < minB || maxB < minA) {
+          return false; // Có trục phân tách → không giao
+        }
+      }
+    }
+    return true; // Không có trục phân tách → giao nhau
+  }
+
   function getDoorTransformFromSnap(snapInfo) {
     if (!snapInfo || !snapInfo.wall || !snapInfo.point) return { valid: false };
 
@@ -123,8 +150,71 @@ const SnapDoorWindowToWall = ({ stageRef }) => {
 
     const offset = ((point.x - v1.x) * dx + (point.y - v1.y) * dy) / wallLength;
 
-    if (offset < doorLength / 2 || offset > wallLength - doorLength / 2)
-      return { valid: false };
+    if (offset < doorLength / 2 || offset > wallLength - doorLength / 2) {
+      return {
+        valid: false,
+        x: point.x,
+        y: point.y,
+        angle: angleDeg,
+        doorHeight,
+        doorLength,
+        wall, // nếu cần sau này
+        reason: "Overlapping existing door"
+      };
+    }
+    // const halfLen = doorLength / 2;
+    // const halfThick = wallThickness / 2;
+    // const rect = {
+    //   x: point.x - dir.x * halfLen - perp.x * halfThick,
+    //   y: point.y - dir.y * halfLen - perp.y * halfThick,
+    //   width: Math.abs(dir.x * doorLength + perp.x * wallThickness),
+    //   height: Math.abs(dir.y * doorLength + perp.y * wallThickness),
+    // };
+
+    if (doors && doors.length) {
+
+      const dir = { x: Math.cos(angleRad), y: Math.sin(angleRad) };
+      const perp = { x: -dir.y, y: dir.x };
+      const center = point;
+      const EXPAND_MARGIN = 5; // 👈 bạn có thể chỉnh 2–5px tuỳ độ nhạy mong muốn
+
+      const halfLen2 = doorLength / 2 + EXPAND_MARGIN;
+      const halfThick2 = wallThickness / 2 + EXPAND_MARGIN;
+      const outerPolygon = [
+        {
+          x: center.x - dir.x * halfLen2 - perp.x * halfThick2,
+          y: center.y - dir.y * halfLen2 - perp.y * halfThick2,
+        },
+        {
+          x: center.x + dir.x * halfLen2 - perp.x * halfThick2,
+          y: center.y + dir.y * halfLen2 - perp.y * halfThick2,
+        },
+        {
+          x: center.x + dir.x * halfLen2 + perp.x * halfThick2,
+          y: center.y + dir.y * halfLen2 + perp.y * halfThick2,
+        },
+        {
+          x: center.x - dir.x * halfLen2 + perp.x * halfThick2,
+          y: center.y - dir.y * halfLen2 + perp.y * halfThick2,
+        },
+      ];
+      for (const d of doors) {
+        if (d.wallId !== wall.id) continue;
+        if (isPolygonOverlap(outerPolygon, d.outerPolygon)) {
+          console.log("da va vao nhau")
+          return {
+            valid: false,
+            x: point.x,
+            y: point.y,
+            angle: angleDeg,
+            doorHeight,
+            doorLength,
+            wall, // nếu cần sau này
+            reason: "Overlapping existing door"
+          };
+        }
+      }
+    }
 
     // TODO: check overlapping nếu muốn
 
@@ -138,6 +228,92 @@ const SnapDoorWindowToWall = ({ stageRef }) => {
       wall, // nếu cần sau này
     };
   }
+  // function getDoorTransformFromSnap(snapInfo) {
+  //   if (!snapInfo || !snapInfo.wall || !snapInfo.point) return { valid: false };
+
+  //   const { wall, point } = snapInfo;
+  //   const v1 = getVertexById(wall.startId);
+  //   const v2 = getVertexById(wall.endId);
+  //   if (!v1 || !v2) return { valid: false };
+
+  //   const dx = v2.x - v1.x;
+  //   const dy = v2.y - v1.y;
+  //   const wallLength = Math.hypot(dx, dy);
+  //   const angleRad = Math.atan2(dy, dx);
+  //   const angleDeg = (angleRad * 180) / Math.PI;
+
+  //   const doorLength = DOOR_CONFIG.width;
+  //   const wallThickness = wall.thickness ?? WALL_WIDTH;
+  //   const doorHeight = DOOR_CONFIG.height;
+
+  //   const offset = ((point.x - v1.x) * dx + (point.y - v1.y) * dy) / wallLength;
+  //   const margin = 10;
+  //   if (offset < doorLength / 2 + margin || offset > wallLength - doorLength / 2 - margin)
+  //     return { valid: false };
+
+  //   const dir = { x: Math.cos(angleRad), y: Math.sin(angleRad) };
+  //   const perp = { x: -dir.y, y: dir.x };
+
+  //   const halfLen = doorLength / 2;
+  //   const halfThick = wallThickness / 2;
+
+  //   const rect = {
+  //     x: point.x - dir.x * halfLen - perp.x * halfThick,
+  //     y: point.y - dir.y * halfLen - perp.y * halfThick,
+  //     width: Math.abs(dir.x * doorLength + perp.x * wallThickness),
+  //     height: Math.abs(dir.y * doorLength + perp.y * wallThickness),
+  //   };
+  //   const center = point;
+  //   const EXPAND_MARGIN = 5; // 👈 bạn có thể chỉnh 2–5px tuỳ độ nhạy mong muốn
+
+  //   const halfLen2 = doorLength / 2 + EXPAND_MARGIN;
+  //   const halfThick2 = wallThickness / 2 + EXPAND_MARGIN;
+  //   const outerPolygon = [
+  //     {
+  //       x: center.x - dir.x * halfLen2 - perp.x * halfThick2,
+  //       y: center.y - dir.y * halfLen2 - perp.y * halfThick2,
+  //     },
+  //     {
+  //       x: center.x + dir.x * halfLen2 - perp.x * halfThick2,
+  //       y: center.y + dir.y * halfLen2 - perp.y * halfThick2,
+  //     },
+  //     {
+  //       x: center.x + dir.x * halfLen2 + perp.x * halfThick2,
+  //       y: center.y + dir.y * halfLen2 + perp.y * halfThick2,
+  //     },
+  //     {
+  //       x: center.x - dir.x * halfLen2 + perp.x * halfThick2,
+  //       y: center.y - dir.y * halfLen2 + perp.y * halfThick2,
+  //     },
+  //   ];
+
+  //   // Kiểm tra trùng với các cửa cũ
+  //   console.log("doors", doors)
+  //   console.log("wall", wall)
+  //   for (const d of doors) {
+  //     console.log(`d.wallId=${d.wallId} wall.id=${wall.id}`)
+  //     if (d.wallId !== wall.id) continue;
+  //     if (isPolygonOverlap(outerPolygon, d.outerPolygon)) {
+  //       console.log("da va vao nhau")
+  //       return { valid: false, reason: "Overlapping existing door" };
+
+  //     } else {
+  //       console.log("ko lap")
+  //     }
+  //   }
+
+  //   return {
+  //     valid: true,
+  //     x: point.x,
+  //     y: point.y,
+  //     angle: angleDeg,
+  //     doorHeight,
+  //     doorLength,
+  //     wall,
+  //     rect,
+  //   };
+  // }
+
 
   useEffect(() => {
     const handleMove = () => {
@@ -151,25 +327,26 @@ const SnapDoorWindowToWall = ({ stageRef }) => {
 
       if (snap?.type === "wall") {
         const transform = getDoorTransformFromSnap({
-          wall: snap.wall,
-          point: snap.point,
+          wall: snap?.wall,
+          point: snap?.point,
         });
         if (transform) {
           setSnapInfo({
             ...transform,
             snapped: true,
-            wall: snap.wall,
-            wallId: snap.wall.id || `${snap.wall.startId}-${snap.wall.endId}`,
-            snapPoint: snap.point,
+            valid: transform?.valid,
+            wall: snap?.wall,
+            wallId: snap?.wall?.id || `${snap?.wall?.startId}-${snap?.wall?.endId}`,
+            snapPoint: snap?.point,
           });
         }
       } else {
-        setSnapInfo({ snapped: false, x, y });
+        setSnapInfo({ snapped: false, x, y, angle: 0 });
       }
     };
 
     const handleClick = () => {
-      if (mode !== "door" || !snapInfo?.snapped) return;
+      if (mode !== "door" || !snapInfo?.snapped || !snapInfo?.valid) return;
 
       const doorLength = DOOR_CONFIG.width;
       const doorHeight = DOOR_CONFIG.height;
@@ -238,9 +415,10 @@ const SnapDoorWindowToWall = ({ stageRef }) => {
         outerPolygon,
         innerPolygon,
       };
-
-      // Thêm cửa mới vào mảng cửa hiện có
-      setDoors((prevDoors) => [...prevDoors, doorData]);
+      if (snapInfo?.valid) {
+        // Thêm cửa mới vào mảng cửa hiện có
+        setDoors((prevDoors) => [...prevDoors, doorData]);
+      }
     };
 
     window.addEventListener("mousemove", handleMove);
@@ -306,7 +484,7 @@ const SnapDoorWindowToWall = ({ stageRef }) => {
             zIndex: 9999,
           }}
         >
-          {DOOR_CONFIG.renderSVG(snapInfo?.snapped ? "black" : "red")}
+          {DOOR_CONFIG.renderSVG(snapInfo?.snapped && snapInfo?.valid ? "black" : "red")}
         </div>
       </>
     );
@@ -315,9 +493,8 @@ const SnapDoorWindowToWall = ({ stageRef }) => {
   return (
     <>
       {/* Cửa preview */}
-      {(() => {
+      {!snapInfo?.snapped && (() => {
         const screenPos = toScreenCoords(pos.x, pos.y); // ✅ chuyển sang screen coords
-
         return (
           <div
             style={{
@@ -331,7 +508,7 @@ const SnapDoorWindowToWall = ({ stageRef }) => {
               transformOrigin: "center center",
             }}
           >
-            {DOOR_CONFIG.renderSVG(snapInfo?.snapped ? "black" : "red")}
+            {DOOR_CONFIG.renderSVG(snapInfo?.snapped && snapInfo?.valid ? "black" : "red")}
           </div>
         );
       })()}

@@ -14,7 +14,8 @@ import {
 } from "react-konva";
 import { useEditor } from "../context/EditorContext";
 import SnapDoorWindowToWall from "./SnapDoorWindowToWall";
-
+import { v4 as uuidv4 } from 'uuid';
+import { type } from "@testing-library/user-event/dist/type";
 const MAJOR_GRID_SIZE = 160;
 const MINOR_DIVISIONS = 10;
 const MINOR_GRID_SIZE = MAJOR_GRID_SIZE / MINOR_DIVISIONS;
@@ -23,6 +24,36 @@ const INITIAL_SCALE = 1;
 const WALL_WIDTH = 10;
 const SNAP_DISTANCE = 10;
 const CLICK_THRESHOLD = 300;
+const DOOR_CONFIG = {
+  width: 70,
+  height: 10,
+  // pivot cũng tính từ dưới lên
+  pivot: { x: 35, y: 6 }, // gốc phải dưới
+  renderSVG: (color = "black") => (
+    <svg
+      width="70"
+      height="12"
+      viewBox="0 0 70 12"
+      fill="none"
+      stroke={color}
+      strokeWidth="1"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <rect
+        x="0"
+        y="0"
+        width="70"
+        height="12"
+        stroke={color}
+        strokeWidth="1"
+        fill="none"
+        strokeDasharray="4 2"
+      />
+      {/* <path d="M1 71L1 79L72 79V71M1 71L72 71M1 71C1 32.3401 32.3401 1 71 1H72V71" /> */}
+    </svg>
+  ),
+};
+
 
 const CanvasGridKonva = () => {
   const stageRef = useRef();
@@ -36,6 +67,7 @@ const CanvasGridKonva = () => {
     walls,
     setWalls,
     doors,
+    setDoors,
   } = useEditor();
 
   const [tempStartPoint, setTempStartPoint] = useState(null);
@@ -49,8 +81,8 @@ const CanvasGridKonva = () => {
   const [rawMousePoint, setRawMousePoint] = useState(null);
   const [mouseDownTime, setMouseDownTime] = useState(null);
   const [hoverWallId, setHoverWallId] = useState(null);
-  const [scale] = useState(INITIAL_SCALE);
-  const [offset] = useState({ x: 0, y: 0 });
+  const [scale, setScale] = useState(INITIAL_SCALE);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
 
   const getVertexById = (id) => vertices.find((v) => v.id === id);
   const getEffectiveVertex = (id) =>
@@ -184,7 +216,144 @@ const CanvasGridKonva = () => {
       />
     );
   };
+  function isPolygonOverlap(polyA, polyB) {
+    const polys = [polyA, polyB];
 
+    for (let i = 0; i < polys.length; i++) {
+      const polygon = polys[i];
+
+      for (let i1 = 0; i1 < polygon.length; i1++) {
+        const i2 = (i1 + 1) % polygon.length;
+        const p1 = polygon[i1];
+        const p2 = polygon[i2];
+
+        const normal = {
+          x: p2.y - p1.y,
+          y: p1.x - p2.x,
+        };
+
+        let minA = null;
+        let maxA = null;
+        for (const p of polyA) {
+          const projected = p.x * normal.x + p.y * normal.y;
+          if (minA === null || projected < minA) minA = projected;
+          if (maxA === null || projected > maxA) maxA = projected;
+        }
+
+        let minB = null;
+        let maxB = null;
+        for (const p of polyB) {
+          const projected = p.x * normal.x + p.y * normal.y;
+          if (minB === null || projected < minB) minB = projected;
+          if (maxB === null || projected > maxB) maxB = projected;
+        }
+
+        if (maxA < minB || maxB < minA) {
+          return false; // Có trục phân tách → không giao
+        }
+      }
+    }
+    return true; // Không có trục phân tách → giao nhau
+  }
+
+  function getDoorTransformFromSnap(snapInfo) {
+    if (!snapInfo || !snapInfo.wall || !snapInfo.point) return { valid: false };
+
+    const { wall, point } = snapInfo;
+    const v1 = getVertexById(wall.startId);
+    const v2 = getVertexById(wall.endId);
+    if (!v1 || !v2) return { valid: false };
+
+    const dx = v2.x - v1.x;
+    const dy = v2.y - v1.y;
+    const wallLength = Math.hypot(dx, dy);
+    const angleRad = Math.atan2(dy, dx);
+    const angleDeg = (angleRad * 180) / Math.PI;
+
+    const doorLength = DOOR_CONFIG.width;
+    const wallThickness = wall.thickness ?? WALL_WIDTH;
+    const doorHeight = Math.min(DOOR_CONFIG.height, wallThickness); // 👈 tự động khớp
+
+    const offset = ((point.x - v1.x) * dx + (point.y - v1.y) * dy) / wallLength;
+
+    if (offset < doorLength / 2 || offset > wallLength - doorLength / 2) {
+      return {
+        valid: false,
+        x: point.x,
+        y: point.y,
+        angle: angleDeg,
+        doorHeight,
+        doorLength,
+        wall, // nếu cần sau này
+        reason: "Overlapping existing door"
+      };
+    }
+    // const halfLen = doorLength / 2;
+    // const halfThick = wallThickness / 2;
+    // const rect = {
+    //   x: point.x - dir.x * halfLen - perp.x * halfThick,
+    //   y: point.y - dir.y * halfLen - perp.y * halfThick,
+    //   width: Math.abs(dir.x * doorLength + perp.x * wallThickness),
+    //   height: Math.abs(dir.y * doorLength + perp.y * wallThickness),
+    // };
+
+    if (doors && doors.length) {
+
+      const dir = { x: Math.cos(angleRad), y: Math.sin(angleRad) };
+      const perp = { x: -dir.y, y: dir.x };
+      const center = point;
+      const EXPAND_MARGIN = 5; // 👈 bạn có thể chỉnh 2–5px tuỳ độ nhạy mong muốn
+
+      const halfLen2 = doorLength / 2 + EXPAND_MARGIN;
+      const halfThick2 = wallThickness / 2 + EXPAND_MARGIN;
+      const outerPolygon = [
+        {
+          x: center.x - dir.x * halfLen2 - perp.x * halfThick2,
+          y: center.y - dir.y * halfLen2 - perp.y * halfThick2,
+        },
+        {
+          x: center.x + dir.x * halfLen2 - perp.x * halfThick2,
+          y: center.y + dir.y * halfLen2 - perp.y * halfThick2,
+        },
+        {
+          x: center.x + dir.x * halfLen2 + perp.x * halfThick2,
+          y: center.y + dir.y * halfLen2 + perp.y * halfThick2,
+        },
+        {
+          x: center.x - dir.x * halfLen2 + perp.x * halfThick2,
+          y: center.y - dir.y * halfLen2 + perp.y * halfThick2,
+        },
+      ];
+      for (const d of doors) {
+        if (d.wallId !== wall.id) continue;
+        if (d.center?.x === point.x && d.center?.y === point.y) continue;
+        if (isPolygonOverlap(outerPolygon, d.outerPolygon)) {
+          return {
+            valid: false,
+            x: point.x,
+            y: point.y,
+            angle: angleDeg,
+            doorHeight,
+            doorLength,
+            wall, // nếu cần sau này
+            reason: "Overlapping existing door"
+          };
+        }
+      }
+    }
+
+    // TODO: check overlapping nếu muốn
+
+    return {
+      valid: true,
+      x: point.x,
+      y: point.y,
+      angle: angleDeg,
+      doorHeight,
+      doorLength,
+      wall, // nếu cần sau này
+    };
+  }
   const renderWall = (
     v1,
     v2,
@@ -248,22 +417,38 @@ const CanvasGridKonva = () => {
                 offsetY={3}
                 rotation={angle}
                 draggable
+                // onDragMove={(e) => {
+                //   const dx = e.target.x() - centerX;
+                //   const dy = e.target.y() - centerY;
+                //   const perp = Math.abs(
+                //     dx * Math.sin(rad) + dy * Math.cos(rad)
+                //   );
+                //   const newThickness = Math.max(2, Math.min(500, perp * 2));
+                //   setWalls((prev) =>
+                //     prev.map((w) =>
+                //       (w.startId === v1.id && w.endId === v2.id) ||
+                //         (w.startId === v2.id && w.endId === v1.id)
+                //         ? { ...w, thickness: newThickness }
+                //         : w
+                //     )
+                //   );
+                // }}
                 onDragMove={(e) => {
                   const dx = e.target.x() - centerX;
                   const dy = e.target.y() - centerY;
-                  const perp = Math.abs(
-                    dx * Math.sin(rad) + dy * Math.cos(rad)
-                  );
+                  const perp = Math.abs(dx * Math.sin(rad) + dy * Math.cos(rad));
                   const newThickness = Math.max(2, Math.min(500, perp * 2));
+
                   setWalls((prev) =>
                     prev.map((w) =>
                       (w.startId === v1.id && w.endId === v2.id) ||
-                      (w.startId === v2.id && w.endId === v1.id)
+                        (w.startId === v2.id && w.endId === v1.id)
                         ? { ...w, thickness: newThickness }
                         : w
                     )
                   );
                 }}
+
               />
             );
           })}
@@ -475,6 +660,8 @@ const CanvasGridKonva = () => {
           thickness: wall.thickness,
           height: wall.height,
           name: wall.name,
+          id: uuidv4(),
+          type: "wall",
         },
         {
           startId: newV.id,
@@ -482,6 +669,8 @@ const CanvasGridKonva = () => {
           thickness: wall.thickness,
           height: wall.height,
           name: wall.name,
+          id: uuidv4(),
+          type: "wall",
         },
       ];
     });
@@ -520,6 +709,78 @@ const CanvasGridKonva = () => {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [mode, walls, lastCreatedVertexId]);
+  useEffect(() => {
+    if (!doors || !walls) return;
+
+    const wallMap = Object.fromEntries(walls.map(w => [w.id, w]));
+
+    setDoors(prevDoors =>
+      prevDoors.map(door => {
+        const wall = wallMap[door.wallId];
+        if (!wall || !wall.start || !wall.end) return null;
+
+        const dx = wall.end.x - wall.start.x;
+        const dy = wall.end.y - wall.start.y;
+        const len = Math.sqrt(dx ** 2 + dy ** 2);
+        if (len === 0) return null;
+
+        const dir = { x: dx / len, y: dy / len };
+        const perp = { x: -dir.y, y: dir.x };
+        const center = {
+          x: wall.start.x + dir.x * door.offset * len,
+          y: wall.start.y + dir.y * door.offset * len,
+        };
+        const halfLen = door.width / 2;
+        const halfThick = door.height / 2;
+        const thickness = wall.thickness ?? 10;
+
+        return {
+          ...door,
+          center,
+          angle: Math.atan2(dir.y, dir.x) * 180 / Math.PI,
+          outerPolygon: [
+            {
+              x: center.x - dir.x * halfLen - perp.x * (thickness / 2),
+              y: center.y - dir.y * halfLen - perp.y * (thickness / 2),
+            },
+            {
+              x: center.x + dir.x * halfLen - perp.x * (thickness / 2),
+              y: center.y + dir.y * halfLen - perp.y * (thickness / 2),
+            },
+            {
+              x: center.x + dir.x * halfLen + perp.x * (thickness / 2),
+              y: center.y + dir.y * halfLen + perp.y * (thickness / 2),
+            },
+            {
+              x: center.x - dir.x * halfLen + perp.x * (thickness / 2),
+              y: center.y - dir.y * halfLen + perp.y * (thickness / 2),
+            },
+          ],
+          innerPolygon: [
+            {
+              x: center.x - dir.x * halfLen - perp.x * halfThick,
+              y: center.y - dir.y * halfLen - perp.y * halfThick,
+            },
+            {
+              x: center.x + dir.x * halfLen - perp.x * halfThick,
+              y: center.y + dir.y * halfLen - perp.y * halfThick,
+            },
+            {
+              x: center.x + dir.x * halfLen + perp.x * halfThick,
+              y: center.y + dir.y * halfLen + perp.y * halfThick,
+            },
+            {
+              x: center.x - dir.x * halfLen + perp.x * halfThick,
+              y: center.y - dir.y * halfLen + perp.y * halfThick,
+            },
+          ],
+        };
+      }).filter(Boolean)
+    );
+  }, [walls]); // hoặc [walls, vertices] nếu cần
+
+
+
 
   const handleMouseDown = (e) => {
     const { x, y } = toWorldCoords(e.evt.layerX, e.evt.layerY);
@@ -590,10 +851,12 @@ const CanvasGridKonva = () => {
           setWalls((p) => [
             ...p,
             {
+              id: uuidv4(),
               startId: tempStartPoint.id,
               endId: startV.id,
               thickness: WALL_WIDTH,
               height: 300,
+              type: "wall",
               name: "Wall",
             },
           ]);
@@ -814,7 +1077,38 @@ const CanvasGridKonva = () => {
       </Group>
     );
   };
+  // Drag stage bằng middle mouse
+  const handleDragMoveGrid = (e) => {
+    const stage = e.target.getStage();
+    setOffset({
+      x: stage.x(),
+      y: stage.y(),
+    });
+  };
+  const handleWheelGrid = (e) => {
+    e.evt.preventDefault();
 
+    const stage = stageRef.current;
+    const oldScale = scale;
+    const pointer = stage.getPointerPosition();
+
+    const scaleBy = 1.05;
+    const newScale = e.evt.deltaY > 0 ? oldScale / scaleBy : oldScale * scaleBy;
+
+    // Tính lại vị trí để giữ điểm chuột tại chỗ
+    const mousePointTo = {
+      x: (pointer.x - offset.x) / oldScale,
+      y: (pointer.y - offset.y) / oldScale,
+    };
+
+    const newOffset = {
+      x: pointer.x - mousePointTo.x * newScale,
+      y: pointer.y - mousePointTo.y * newScale,
+    };
+
+    setScale(newScale);
+    setOffset(newOffset);
+  };
   return (
     <>
       {/* Style CSS trong JSX */}
@@ -835,6 +1129,9 @@ const CanvasGridKonva = () => {
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
+          onDragMove={handleDragMoveGrid}
+          onWheel={handleWheelGrid}
+          draggable
         >
           <Layer>
             {gridLines}
@@ -968,7 +1265,7 @@ const CanvasGridKonva = () => {
                 />
               );
             })} */}
-            {doors.map((door) => (
+            {/* {doors.map((door) => (
               <Rect
                 key={door.id}
                 x={door.rect.x}
@@ -981,6 +1278,28 @@ const CanvasGridKonva = () => {
                 rotation={door.angle}
                 shadowBlur={5}
               />
+            ))} */}
+            {doors.map((door) => (
+              <React.Fragment key={door.id}>
+                {/* Outer Polygon – tường bị cắt */}
+                <Line
+                  points={door.outerPolygon.flatMap(p => [p.x, p.y])}
+                  fill="#fff"
+                  closed
+                  stroke="#fff"
+                  strokeWidth={1}
+                />
+
+                {/* Inner Polygon – cánh cửa */}
+                <Line
+                  points={door.innerPolygon.flatMap(p => [p.x, p.y])}
+                  fill="green"
+                  closed
+                  stroke="black"
+                  strokeWidth={1}
+                  shadowBlur={5}
+                />
+              </React.Fragment>
             ))}
             {renderMeasurement()}
           </Layer>
